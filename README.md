@@ -17,7 +17,7 @@ The 2017 MacBook Pro (Touch Bar) uses the **Apple T1 chip**, not T2. This is a f
 **Key T1 differences from T2:**
 - T1 has **no BCE PCIe device** — `apple_bce` module loads but finds nothing to bind to. This is expected and not an error.
 - T1 keyboard/trackpad communicate via **SPI** (`applespi` driver), not BCE
-- T1 Touch Bar uses a **USB HID** path, not `hid-appletb-kbd`
+- T1 Touch Bar uses a **USB HID** path via the iBridge — requires `apple-ibridge` + `apple-ib-tb` driver stack plus a USB rebind workaround
 - T1 internal speakers require a **sub-codec** (CS42L83/CS42L84) that the current Linux kernel driver does not fully support
 
 ---
@@ -35,9 +35,9 @@ The 2017 MacBook Pro (Touch Bar) uses the **Apple T1 chip**, not T2. This is a f
 | USB-C / Thunderbolt | ✅ Works | |
 | Internal Speakers | ✅ Works | Requires `snd_hda_macbookpro` out-of-tree driver |
 | Headphone Jack | ✅ Works | Requires `snd_hda_macbookpro` out-of-tree driver |
-| Internal Microphone | ⚠️ Partial | May work after driver install — test after reboot |
+| Internal Microphone | ✅ Works | Requires duplex profile set in WirePlumber config |
 | Bluetooth Audio | ✅ Works | |
-| Touch Bar | ❌ Not working | No T1 Touch Bar driver in mainline kernel |
+| Touch Bar | ✅ Works | Requires patched `macbook12-spi-driver` + USB rebind service |
 | Keyboard Backlight | ✅ Works | Via `applespi` — requires udev rule for persistence |
 | Fan Control | ✅ Works | Via `applesmc` |
 | Battery | ✅ Works | |
@@ -276,14 +276,14 @@ sudo apt install pipewire pipewire-pulse wireplumber pulseaudio-utils
 systemctl --user enable --now pipewire pipewire-pulse wireplumber
 ```
 
-Set the correct output profile and port:
+Set the correct output profile and port, and enable the microphone by using the duplex profile:
 
 ```bash
 pactl set-card-profile alsa_card.pci-0000_00_1f.3 output:analog-stereo+input:analog-stereo
 pactl set-sink-port alsa_output.pci-0000_00_1f.3.analog-stereo analog-output-speaker
 ```
 
-Make the profile persist across reboots:
+Make the duplex profile (speakers + mic) persist across reboots:
 
 ```bash
 mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
@@ -296,6 +296,7 @@ monitor.alsa.rules = [
       update-props = {
         api.acp.auto-profile = true
         api.acp.auto-port = true
+        device.profile = "output:analog-stereo+input:analog-stereo"
       }
     }
   }
@@ -303,6 +304,18 @@ monitor.alsa.rules = [
 EOF
 
 systemctl --user restart wireplumber
+```
+
+Verify both output and input sources are active:
+
+```bash
+pactl list sources short
+# Should show both:
+# alsa_output.pci-0000_00_1f.3.analog-stereo.monitor
+# alsa_input.pci-0000_00_1f.3.analog-stereo
+
+# Test microphone
+arecord -d 5 -f cd /tmp/test-mic.wav && aplay /tmp/test-mic.wav
 ```
 
 ### ⚠️ After kernel updates
@@ -319,25 +332,161 @@ sudo reboot
 
 ---
 
-## Step 5 — Touch Bar (T1 Status)
+## Step 5 — Fix Touch Bar
 
-> ⚠️ **The Touch Bar does not work on MBP14,2 / MBP14,3 with the current kernel.**
+The T1 Touch Bar works using the `apple-ibridge` + `apple-ib-tb` driver stack from the `macbook12-spi-driver` repo, combined with a USB rebind trick to properly initialize the iBridge interface at boot.
 
-The T1 Touch Bar uses a USB HID path that differs from the T2 Touch Bar. The `tiny-dfr` tool and `hid-appletb-kbd` module are designed for **T2 Macs only**. Do not install `tiny-dfr` on a T1 Mac — it will have no effect.
+> ⚠️ **Do NOT install `tiny-dfr` or `hid-appletb-kbd`** — those are for T2 Macs only and will have no effect on T1.
 
-The Touch Bar strip remains **lit** (showing the default brightness controls from firmware) but is not interactive under Linux.
+### 5a — Clone the driver
 
 ```bash
-# The T1 Touch Bar is hosted by the iBridge USB device
-lsusb | grep Apple
-# Shows: Apple, Inc. iBridge
-
-# No interactive Touch Bar driver is available for T1
-sudo dmesg | grep -i "touchbar\|8302"
-# No relevant output expected
+cd ~
+git clone https://github.com/almas/macbook12-spi-driver
+cd macbook12-spi-driver
+git checkout touchbar-driver-hid-driver
 ```
 
-**Tracking support:** T1 Touch Bar Linux support would require a dedicated USB HID driver. There is no active upstream effort for this at time of writing.
+### 5b — Patch for kernel 6.x compatibility
+
+The driver was written for older kernels. Three changes are needed:
+
+```bash
+cd ~/macbook12-spi-driver
+
+# Fix 1: remove() return type changed to void in kernel 6.x
+sudo sed -i 's/static int appletb_platform_remove/static void appletb_platform_remove/' apple-ib-tb.c
+sudo sed -i 's/static int appleals_platform_remove/static void appleals_platform_remove/' apple-ib-als.c
+
+# Fix 2: remove .owner field from acpi_driver (removed in kernel 6.x)
+sudo sed -i '/\.owner.*= THIS_MODULE,/d' apple-ibridge.c
+
+# Fix 3: report_fixup return type changed to const __u8 *
+sudo sed -i 's/static __u8 \*appleib_report_fixup/static const __u8 *appleib_report_fixup/' apple-ibridge.c
+```
+
+Now fix the function bodies — remove the old error-handling return statements since the functions are now void:
+
+```bash
+# Fix apple-ib-tb.c remove function body
+grep -n "int rc;\|goto error;\|return 0;\|return rc;" apple-ib-tb.c
+```
+
+Note the line numbers for the remove function block (around line 1262) and use awk to remove the `int rc;`, `goto error;`, `return 0;`, and `return rc;` lines. Example (adjust line numbers to match your output):
+
+```bash
+# Remove int rc; line
+sudo awk 'NR==1267 { next } { print }' apple-ib-tb.c > /tmp/fix.c && sudo cp /tmp/fix.c apple-ib-tb.c
+# Remove goto error; line  
+sudo awk 'NR==1269 { next } { print }' apple-ib-tb.c > /tmp/fix.c && sudo cp /tmp/fix.c apple-ib-tb.c
+# Remove return 0; line
+sudo awk 'NR==1269 { next } { print }' apple-ib-tb.c > /tmp/fix.c && sudo cp /tmp/fix.c apple-ib-tb.c
+# Remove error: label and return rc;
+sudo awk 'NR==1269 { next } NR==1270 { next } { print }' apple-ib-tb.c > /tmp/fix.c && sudo cp /tmp/fix.c apple-ib-tb.c
+# Remove remaining return rc;
+sudo awk 'NR==1269 { next } { print }' apple-ib-tb.c > /tmp/fix.c && sudo cp /tmp/fix.c apple-ib-tb.c
+```
+
+Do the same for `apple-ib-als.c` — find the remove function lines and remove `int rc;`, `goto error;`, `return 0;`, `error:`, and `return rc;` from that function only.
+
+Verify both functions end cleanly:
+
+```bash
+grep -n "appletb_platform_remove\|appleals_platform_remove" apple-ib-tb.c apple-ib-als.c
+```
+
+### 5c — Install via DKMS
+
+```bash
+cd ~/macbook12-spi-driver
+sudo ln -s `pwd` /usr/src/applespi-0.1
+sudo dkms install applespi/0.1 --force
+```
+
+A successful install shows:
+
+```
+apple-ibridge.ko ... Installing to /lib/modules/.../updates/dkms/
+apple-ib-tb.ko   ... Installing to /lib/modules/.../updates/dkms/
+apple-ib-als.ko  ... Installing to /lib/modules/.../updates/dkms/
+```
+
+### 5d — Load modules and test
+
+```bash
+sudo modprobe apple-ibridge
+sudo modprobe apple-ib-tb
+sudo modprobe apple-ib-als
+
+# Trigger USB rebind to activate the Touch Bar display
+echo '1-3' | sudo tee /sys/bus/usb/drivers/usb/unbind
+sleep 1
+echo '1-3' | sudo tee /sys/bus/usb/drivers/usb/bind
+sleep 2
+```
+
+The Touch Bar should light up and show content.
+
+### 5e — Make it persistent across reboots
+
+```bash
+# Load modules on boot
+cat <<EOF | sudo tee /etc/modules-load.d/apple-touchbar.conf
+apple-ibridge
+apple-ib-tb
+apple-ib-als
+EOF
+
+# Create systemd service for USB rebind
+sudo tee /etc/systemd/system/macbook-quirks.service << 'EOF'
+[Unit]
+Description=Re-enable MacBook 14,3 TouchBar
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 2
+ExecStart=/bin/sh -c "echo '1-3' > /sys/bus/usb/drivers/usb/unbind"
+ExecStart=/bin/sh -c "echo '1-3' > /sys/bus/usb/drivers/usb/bind"
+RemainAfterExit=yes
+TimeoutSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl enable macbook-quirks.service
+sudo reboot
+```
+
+After reboot verify:
+
+```bash
+lsmod | grep apple_ib
+# Should show: apple_ibridge, apple_ib_tb, apple_ib_als
+
+sudo systemctl status macbook-quirks.service
+# Should show: active (exited)
+```
+
+### 5f — Optional: configure Touch Bar mode
+
+```bash
+# Default to function keys (F1-F12) instead of media controls
+cat <<EOF | sudo tee /etc/modprobe.d/apple_ib_tb.conf
+options apple_ib_tb fnmode=2
+options apple_ib_tb idle_timeout=60
+EOF
+
+sudo modprobe -r apple_ib_tb
+sudo modprobe apple_ib_tb
+```
+
+Available `fnmode` values: `0` = media keys only, `1` = fn key switches modes, `2` = function keys by default.
+
+> **Note:** The USB rebind workaround (`1-3` unbind/bind) is needed due to a known Linux/usbmuxd initialization issue with the T1 iBridge. Follow upstream progress at https://github.com/roadrunner2/macbook12-spi-driver/issues/42
+
+> **Driver source:** https://github.com/almas/macbook12-spi-driver (fork of roadrunner2/macbook12-spi-driver)
 
 ---
 
@@ -620,9 +769,14 @@ lsusb | grep Apple
 | WiFi 5GHz | `sudo iw dev wlp3s0 scan \| grep freq` | Shows ~5000MHz+ networks |
 | Webcam | `ls /dev/video*` | `/dev/video0` present |
 | Webcam driver | `lsmod \| grep facetimehd` | Module listed |
+| Touch Bar modules | `lsmod \| grep apple_ib` | `apple_ibridge`, `apple_ib_tb`, `apple_ib_als` listed |
+| Touch Bar display | Visual check | Shows content on boot |
+| Touch Bar service | `systemctl status macbook-quirks.service` | Active (exited) |
 | Audio driver | `lsmod \| grep snd_hda_codec_cs8409` | Module listed |
 | Audio output | `speaker-test -c 2 -t wav` | Sound from speakers |
+| Microphone | `pactl list sources short` | Shows `alsa_input...analog-stereo` |
 | Keyboard backlight | `cat /sys/class/leds/spi::kbd_backlight/brightness` | Returns your set value (e.g. 100) |
+| Fan Control | `sensors` | Shows fan RPM and temperatures from `applesmc-acpi-0` |
 | Bluetooth | Settings → Bluetooth | Devices discoverable |
 
 ---
@@ -631,7 +785,7 @@ lsusb | grep Apple
 
 **Internal speakers / headphone jack:** Work after installing the `snd_hda_macbookpro` out-of-tree driver (Step 4). The driver must be manually reinstalled after every kernel update — it is not a DKMS module and does not rebuild automatically.
 
-**Touch Bar:** No T1 Touch Bar driver exists in the mainline kernel. The bar remains lit (firmware default) but is not interactive. `tiny-dfr` and `hid-appletb-kbd` are for T2 Macs only — do not install them on T1.
+**Touch Bar:** Works after installing the patched `macbook12-spi-driver` DKMS module and enabling the `macbook-quirks.service` systemd service (Step 5). The driver requires kernel API patches for 6.x compatibility. `tiny-dfr` and `hid-appletb-kbd` are for T2 Macs only — do not install them on T1.
 
 **5GHz WiFi:** Works with the NVRAM config fix in Step 7c using `boardflags3=0xC0000303`. Without this config file only 2.4GHz is available.
 
@@ -655,7 +809,8 @@ lsusb | grep Apple
 | t2linux firmware script | https://wiki.t2linux.org/tools/firmware.sh |
 | facetimehd driver | https://github.com/patjak/facetimehd |
 | facetimehd firmware | https://github.com/patjak/facetimehd-firmware |
-| BCM43602 5GHz NVRAM fix (gist) | https://gist.github.com/almas/5f75adb61bccf604b6572f763ce63e3e |
+| macbook12-spi-driver (Touch Bar) | https://github.com/almas/macbook12-spi-driver |
+| Touch Bar USB rebind issue | https://github.com/roadrunner2/macbook12-spi-driver/issues/42 |
 | snd_hda_macbookpro (audio driver) | https://github.com/davidjo/snd_hda_macbookpro |
 | t2linux Discord | https://discord.com/invite/68MRhQu |
 
