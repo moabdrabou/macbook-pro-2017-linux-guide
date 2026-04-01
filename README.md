@@ -1,4 +1,4 @@
-# Ubuntu 24.04 LTS on MacBook Pro 2017 (Touch Bar) — Fix Guide
+# Linux on MacBook Pro 2017 (MBP14,3 — T1 Chip) — Complete Fix Guide
 
 > Covers: **Webcam**, **Touch Bar**, **Audio**, and **WiFi** for `MacBookPro14,2` (13") and `MacBookPro14,3` (15") running Ubuntu 24.04 LTS.
 
