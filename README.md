@@ -13,6 +13,7 @@
 - [Step 4 — Fix Audio](#step-4--fix-audio)
 - [Step 5 — Fix Touch Bar](#step-5--fix-touch-bar)
 - [Step 6 — Fix Webcam (FaceTime HD)](#step-6--fix-webcam-facetime-hd)
+- [Step 7 — Fix WiFi (All Bands including 5GHz)](#step-7--fix-wifi-all-bands-including-5ghz)
 - [Verification Checklist](#verification-checklist)
 - [Known Caveats](#known-caveats)
 - [Resources](#resources)
@@ -38,20 +39,27 @@ Make sure you have internet access (via USB-C adapter/Ethernet or external USB W
 The stock Ubuntu kernel lacks support for Apple T1/T2 hardware. Installing the T2 kernel enables the **keyboard, trackpad, Touch Bar, audio, and fan** control.
 
 ```bash
-# Add the T2 Ubuntu apt repository GPG key
+# Step 1 — Add GPG key and common repo
 curl -s --compressed "https://adityagarg8.github.io/t2-ubuntu-repo/KEY.gpg" \
   | gpg --dearmor \
   | sudo tee /etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg >/dev/null
 
-# Add the repository source list
 sudo curl -s --compressed \
   -o /etc/apt/sources.list.d/t2.list \
   "https://adityagarg8.github.io/t2-ubuntu-repo/t2.list"
 
-# Update and install the T2 kernel
+# Step 2 — Add the Noble (24.04) release-specific repo
+# ⚠️ This step is required — without it, linux-t2 will not be found
+CODENAME=noble
+echo "deb [signed-by=/etc/apt/trusted.gpg.d/t2-ubuntu-repo.gpg] https://github.com/AdityaGarg8/t2-ubuntu-repo/releases/download/${CODENAME} ./" \
+  | sudo tee -a /etc/apt/sources.list.d/t2.list
+
+# Step 3 — Update and install
 sudo apt update
 sudo apt install linux-t2
 ```
+
+> **Note:** If you get `E: Unable to locate package linux-t2` — it means Step 2 was skipped or failed. The release-specific repo (`noble`) must be appended to `t2.list` for Ubuntu 24.04. Two variants are available: `linux-t2` (Mainline, newer patches) and `linux-t2-lts` (LTS, more stable). Either works.
 
 Reboot and at the GRUB menu, select the **`linux-t2`** kernel entry.
 
@@ -300,6 +308,136 @@ ffplay /dev/video0
 
 ---
 
+## Step 7 — Fix WiFi (All Bands including 5GHz)
+
+The 2017 MacBook Pro uses a **Broadcom BCM43602** chip. Without proper firmware, Linux defaults to a generic driver that only sees 2.4GHz networks and has weak signal. The fix requires copying the WiFi firmware from macOS to Linux.
+
+> ⚠️ **Important:** Do NOT install `broadcom-wl` — it breaks things. The correct driver is `brcmfmac` which is already built into the T2 kernel. The issue is missing firmware files, not the driver itself.
+
+### 7a — Copy firmware from macOS (do this while still in macOS)
+
+Before reinstalling Ubuntu, run these commands in macOS Terminal to copy the firmware to your USB drive:
+
+```bash
+# Find your USB mount point
+diskutil list
+
+# Copy WiFi firmware files to USB (replace YOUR_USB with your volume name)
+sudo mkdir -p /Volumes/YOUR_USB/wifi-firmware
+sudo cp /usr/share/firmware/wifi/* /Volumes/YOUR_USB/wifi-firmware/ 2>/dev/null
+sudo cp /private/var/db/PersistentSystemInstallation/firmware/WiFi/* /Volumes/YOUR_USB/wifi-firmware/ 2>/dev/null
+
+# Also try the standalone path
+sudo cp /usr/standalone/firmware/wifi/* /Volumes/YOUR_USB/wifi-firmware/ 2>/dev/null
+```
+
+Alternatively, use the official t2linux firmware script — download it on macOS:
+
+```bash
+curl -OL https://wiki.t2linux.org/tools/firmware.sh
+chmod +x firmware.sh
+sudo ./firmware.sh
+```
+
+This script automatically finds and packages the correct firmware files for your Mac model.
+
+### 7b — Install firmware on Ubuntu
+
+After booting into Ubuntu, copy the firmware files to the correct location:
+
+```bash
+# Create the firmware directory
+sudo mkdir -p /lib/firmware/brcm
+
+# Copy from USB (replace YOUR_USB_MOUNT with your actual mount point)
+sudo cp /media/$USER/YOUR_USB/wifi-firmware/* /lib/firmware/brcm/
+
+# Or if you used the t2linux script, it produces a tar.gz — extract it:
+# sudo tar -xzf wifi-firmware.tar.gz -C /lib/firmware/brcm/
+```
+
+### 7c — Fix 5GHz by setting country code
+
+The BCM43602 chip defaults to country code `X0` which Linux doesn't support, blocking 5GHz channels. Fix it:
+
+```bash
+# Check current country code
+iw reg get
+
+# Set regulatory domain — use your actual country code (TR for Turkey, US, GB, DE, etc.)
+sudo iw reg set TR
+```
+
+Make it permanent:
+
+```bash
+sudo nano /etc/default/crda
+# Add or change: REGDOMAIN=TR
+```
+
+Also create a firmware config file to set it at the driver level:
+
+```bash
+# Find your MAC address
+ip link show | grep -A1 wlan
+# Note the MAC address e.g. aa:bb:cc:dd:ee:ff
+
+sudo nano /lib/firmware/brcm/brcmfmac43602-pcie.txt
+```
+
+Add these contents (replace the MAC address with yours):
+
+```
+# Firmware configuration for BCM43602 - MacBook Pro 2017
+boardtype=0x073e
+boardrev=0x1101
+boardflags=0x00080001
+boardflags2=0x00000000
+sromrev=11
+ccode=TR
+regrev=0
+macaddr=aa:bb:cc:dd:ee:ff
+```
+
+### 7d — Reload the driver
+
+```bash
+sudo modprobe -r brcmfmac_wcc
+sudo modprobe -r brcmfmac
+sudo modprobe brcmfmac
+```
+
+### 7e — Verify 5GHz networks are visible
+
+```bash
+# Scan for networks and check bands
+sudo iw dev wlan0 scan | grep -E "SSID|freq"
+# 5GHz networks use frequencies 5000MHz+
+# 2.4GHz networks use frequencies around 2400MHz
+
+# Check signal and connection info
+iwconfig wlan0
+
+# Confirm country code applied
+iw reg get
+```
+
+### ⚠️ wpa_supplicant regression note
+
+If WiFi connects but immediately drops or won't authenticate despite correct password, this is a known regression in `wpa_supplicant 2.11`. Fix it by disabling offloading:
+
+```bash
+# Add to kernel parameters in /etc/default/grub
+# GRUB_CMDLINE_LINUX="... brcmfmac.feature_disable=0x82000"
+sudo nano /etc/default/grub
+
+# Apply
+sudo update-grub
+sudo reboot
+```
+
+---
+
 ## Verification Checklist
 
 | Component   | Command                                                         | Expected Result                        |
@@ -311,13 +449,16 @@ ffplay /dev/video0
 | Touch Bar   | Visual check                                                     | Lights up after `tiny-dfr` + reboot    |
 | Webcam      | `ls /dev/video*`                                                 | `/dev/video0` present                  |
 | Webcam driver | `lsmod | grep facetimehd`                                      | Module listed                          |
+| WiFi bands    | `sudo iw dev wlan0 scan \| grep freq`                           | Shows 5000MHz+ frequencies             |
+| WiFi country  | `iw reg get`                                                     | Shows your country code                |
 
 ---
 
 ## Known Caveats
 
 - **Microphone**: The `t2-better-audio` script fixes speakers and headphone jack. Internal microphone support may vary — check the [t2linux audio guide](https://wiki.t2linux.org/guides/audio-config/) for DSP mic config.
-- **WiFi**: Not covered in this guide. See the [t2linux WiFi guide](https://wiki.t2linux.org/guides/wifi-bluetooth/).
+- **WiFi signal strength**: Even after the fix, signal may be weaker than macOS. This is a known limitation of the Linux brcmfmac driver on BCM43602. Positioning closer to the router helps.
+- **broadcom-wl**: Do NOT install this package — it conflicts with `brcmfmac` and breaks WiFi entirely.
 - **DKMS & kernel updates**: The `facetimehd` driver is installed as a DKMS module, so it should rebuild automatically on kernel updates. If the webcam breaks after a kernel update, run `sudo dkms autoinstall`.
 - **Secure Boot**: Must be disabled in Apple's Startup Security Utility for the T2 kernel to load.
 
@@ -335,6 +476,8 @@ ffplay /dev/video0
 | facetimehd driver | https://github.com/patjak/facetimehd |
 | facetimehd firmware | https://github.com/patjak/facetimehd-firmware |
 | Kernel 6.17 audio fix | https://9to5linux.com/how-to-fix-no-sound-issue-on-macbook-pro-with-linux-kernel-6-17-and-later |
+| t2linux WiFi & Bluetooth Guide | https://wiki.t2linux.org/guides/wifi-bluetooth/ |
+| t2linux firmware script | https://wiki.t2linux.org/tools/firmware.sh |
 | t2linux Discord | https://discord.com/invite/68MRhQu |
 
 ---
