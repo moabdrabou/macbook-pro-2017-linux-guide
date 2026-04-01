@@ -29,7 +29,7 @@ The 2017 MacBook Pro (Touch Bar) uses the **Apple T1 chip**, not T2. This is a f
 | Keyboard | ✅ Works | Via `applespi` (SPI driver) |
 | Trackpad | ✅ Works | Via `applespi` (SPI driver) |
 | WiFi (2.4GHz) | ✅ Works | BCM43602 with generic firmware |
-| WiFi (5GHz) | ❌ Not working | BCM43602 firmware limitation on Linux — no fix available |
+| WiFi (5GHz) | ✅ Works | Requires NVRAM config with `boardflags3=0xC0000303` |
 | Webcam | ✅ Works | Requires `facetimehd` driver |
 | Bluetooth | ✅ Works | Built into T2 kernel |
 | USB-C / Thunderbolt | ✅ Works | |
@@ -401,13 +401,11 @@ ffplay /dev/video0
 
 ---
 
-## Step 7 — Fix WiFi
+## Step 7 — Fix WiFi (2.4GHz + 5GHz)
 
-The 2017 MacBook Pro uses a **Broadcom BCM43602** chip. The `brcmfmac` driver is built into the T2 kernel, but proper Apple-specific firmware must be copied from macOS for reliable operation.
+The 2017 MacBook Pro uses a **Broadcom BCM43602** chip. The `brcmfmac` driver is built into the T2 kernel. With the right NVRAM firmware configuration file, both 2.4GHz and 5GHz bands work simultaneously.
 
 > ⚠️ **Do NOT install `broadcom-wl`** — it conflicts with `brcmfmac` and breaks WiFi entirely.
-
-> ⚠️ **5GHz WiFi does not work on BCM43602 under Linux.** The Apple-specific firmware binary is incompatible with the `brcmfmac` driver — using it causes the driver to crash. The generic firmware provides reliable 2.4GHz connectivity only.
 
 ### 7a — Back up WiFi firmware from macOS
 
@@ -432,7 +430,57 @@ sudo bash /boot/efi/firmware.sh
 # Answer Y to keep a copy for future use
 ```
 
-### 7c — Set regulatory domain
+### 7c — Enable 5GHz with the NVRAM configuration fix
+
+The key to enabling both bands simultaneously is the `boardflags3` value in the NVRAM config file. The value `0xC0000303` enables both 2.4GHz and 5GHz bands. Without this file only 2.4GHz works.
+
+First find your MAC address:
+
+```bash
+ip link show wlp3s0 | grep ether
+# Note the MAC address e.g. 00:90:4c:0d:f4:3e
+```
+
+Back up the existing config and create the new one:
+
+```bash
+# Back up existing config
+sudo cp /lib/firmware/brcm/brcmfmac43602-pcie.txt \
+  /lib/firmware/brcm/brcmfmac43602-pcie.txt.bak
+
+# Create the new NVRAM config with 5GHz support
+sudo tee /lib/firmware/brcm/brcmfmac43602-pcie.txt << 'EOF'
+sromrev=11
+subvid=0x14e4
+boardtype=0x61b
+boardrev=0x1421
+vendid=0x14e4
+devid=0x43ba
+macaddr=00:90:4c:0d:f4:3e
+ccode=TR
+regrev=245
+boardflags=0x10401001
+boardflags2=0x00000002
+boardflags3=0xC0000303
+aa2g=7
+aa5g=7
+agbg0=133
+agbg1=133
+agbg2=133
+aga0=71
+aga1=71
+aga2=71
+txchain=7
+rxchain=7
+antswitch=0
+EOF
+```
+
+> Replace `macaddr=00:90:4c:0d:f4:3e` with your actual MAC address from the `ip link` command above. Replace `ccode=TR` with your country code.
+
+> **Credit:** The `boardflags3=0xC0000303` discovery is from Andy Holst via https://gist.github.com/almas/5f75adb61bccf604b6572f763ce63e3e
+
+### 7d — Set regulatory domain
 
 ```bash
 # Set your country code (TR = Turkey, US, GB, DE, etc.)
@@ -443,18 +491,25 @@ sudo nano /etc/default/crda
 # Add or change: REGDOMAIN=TR
 ```
 
-### 7d — Find your WiFi interface name
+### 7e — Reload the driver and verify
+
+```bash
+sudo modprobe -r brcmfmac_wcc
+sudo modprobe -r brcmfmac
+sudo modprobe brcmfmac
+sleep 3
+
+# Scan for networks — 5GHz shows as freq 5000MHz+
+sudo iw dev wlp3s0 scan | grep -E "SSID|freq"
+```
+
+You should see both 2.4GHz (~2400MHz) and 5GHz (~5000MHz+) networks listed.
+
+### 7f — Find your WiFi interface name
 
 ```bash
 ip link show | grep wl
 # Interface is likely wlp3s0, not wlan0
-```
-
-### 7e — Verify WiFi is working
-
-```bash
-sudo iw dev wlp3s0 scan | grep SSID
-sudo dmesg | grep brcmfmac | tail -5
 ```
 
 ### ⚠️ wpa_supplicant regression note
@@ -561,7 +616,8 @@ lsusb | grep Apple
 | T1 chip mode | `lsusb \| grep Apple` | `Apple, Inc. iBridge` (not Recovery Mode) |
 | Keyboard/Trackpad | `sudo dmesg \| grep applespi` | `modeswitch done` + input devices listed |
 | WiFi interface | `ip link show \| grep wl` | `wlp3s0` present |
-| WiFi connection | `iwconfig wlp3s0` | Shows ESSID and signal |
+| WiFi 2.4GHz | `sudo iw dev wlp3s0 scan \| grep freq` | Shows ~2400MHz networks |
+| WiFi 5GHz | `sudo iw dev wlp3s0 scan \| grep freq` | Shows ~5000MHz+ networks |
 | Webcam | `ls /dev/video*` | `/dev/video0` present |
 | Webcam driver | `lsmod \| grep facetimehd` | Module listed |
 | Audio driver | `lsmod \| grep snd_hda_codec_cs8409` | Module listed |
@@ -577,7 +633,7 @@ lsusb | grep Apple
 
 **Touch Bar:** No T1 Touch Bar driver exists in the mainline kernel. The bar remains lit (firmware default) but is not interactive. `tiny-dfr` and `hid-appletb-kbd` are for T2 Macs only — do not install them on T1.
 
-**5GHz WiFi:** The BCM43602 Apple-specific firmware binary causes the `brcmfmac` driver to crash. 2.4GHz works reliably with the generic firmware.
+**5GHz WiFi:** Works with the NVRAM config fix in Step 7c using `boardflags3=0xC0000303`. Without this config file only 2.4GHz is available.
 
 **apple_bce:** Loads on T1 without error but finds no device — this is normal and expected. `/dev/bce*` will not exist on T1.
 
@@ -599,6 +655,7 @@ lsusb | grep Apple
 | t2linux firmware script | https://wiki.t2linux.org/tools/firmware.sh |
 | facetimehd driver | https://github.com/patjak/facetimehd |
 | facetimehd firmware | https://github.com/patjak/facetimehd-firmware |
+| BCM43602 5GHz NVRAM fix (gist) | https://gist.github.com/almas/5f75adb61bccf604b6572f763ce63e3e |
 | snd_hda_macbookpro (audio driver) | https://github.com/davidjo/snd_hda_macbookpro |
 | t2linux Discord | https://discord.com/invite/68MRhQu |
 
