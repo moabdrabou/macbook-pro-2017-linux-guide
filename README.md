@@ -1,6 +1,6 @@
 # Linux on MacBook Pro 2017 (MBP14,3 — T1 Chip) — Complete Fix Guide
 
-> Covers: **Webcam**, **Touch Bar**, **Audio**, and **WiFi** for `MacBookPro14,2` (13") and `MacBookPro14,3` (15") running Ubuntu 24.04 LTS.
+> Covers: **Keyboard Backlight**, **Webcam**, **Touch Bar**, **Audio**, **WiFi**, **Fan Monitoring** and more for `MacBookPro14,2` (13") and `MacBookPro14,3` (15") running Ubuntu 24.04 LTS (also applicable to future LTS versions).
 
 ---
 
@@ -18,7 +18,7 @@ The 2017 MacBook Pro (Touch Bar) uses the **Apple T1 chip**, not T2. This is a f
 - T1 has **no BCE PCIe device** — `apple_bce` module loads but finds nothing to bind to. This is expected and not an error.
 - T1 keyboard/trackpad communicate via **SPI** (`applespi` driver), not BCE
 - T1 Touch Bar uses a **USB HID** path via the iBridge — requires `apple-ibridge` + `apple-ib-tb` driver stack plus a USB rebind workaround
-- T1 internal speakers require a **sub-codec** (CS42L83/CS42L84) that the current Linux kernel driver does not fully support
+- T1 internal speakers use a **sub-codec** (CS42L83/CS42L84) — requires the `snd_hda_macbookpro` out-of-tree driver (covered in Step 4)
 
 ---
 
@@ -36,7 +36,6 @@ The 2017 MacBook Pro (Touch Bar) uses the **Apple T1 chip**, not T2. This is a f
 | Internal Speakers | ✅ Works | Requires `snd_hda_macbookpro` out-of-tree driver |
 | Headphone Jack | ✅ Works | Requires `snd_hda_macbookpro` out-of-tree driver |
 | Internal Microphone | ✅ Works | Requires duplex profile set in WirePlumber config |
-| Bluetooth Audio | ✅ Works | |
 | Touch Bar | ✅ Works | Requires patched `macbook12-spi-driver` + USB rebind service |
 | Keyboard Backlight | ✅ Works | Via `applespi` — requires udev rule for persistence |
 | Fan Control | ✅ Works | Via `applesmc` |
@@ -56,8 +55,8 @@ The 2017 MacBook Pro (Touch Bar) uses the **Apple T1 chip**, not T2. This is a f
 - [Step 6: Fix Webcam (FaceTime HD)](#step-6-fix-webcam-facetime-hd)
 - [Step 7: Fix WiFi (2.4GHz + 5GHz)](#step-7-fix-wifi-24ghz--5ghz)
 - [Step 8: Keyboard Backlight](#step-8-keyboard-backlight)
-- [Step 8d: Temperature & Fan Monitoring](#step-8d-temperature--fan-monitoring-optional-but-recommended)
-- [Step 9: Restore T1 Firmware (Critical)](#step-9-restore-t1-firmware-critical)
+- [Step 9: Temperature & Fan Monitoring](#step-9-temperature--fan-monitoring-optional-but-recommended)
+- [Step 10: Restore T1 Firmware (Critical)](#step-10-restore-t1-firmware-critical)
 - [Verification Checklist](#verification-checklist)
 - [Known Caveats](#known-caveats)
 - [Resources](#resources)
@@ -198,23 +197,30 @@ sudo apt install git build-essential
 
 ### 4b — Install kernel source (required by the installer)
 
-The installer needs the kernel 6.17 source as a build reference. Install it, then create a symlink so the installer can find it under the running kernel version:
+The installer needs a kernel source package as a build reference. Since the T2 kernel has no matching source package, install the closest available Ubuntu kernel source and symlink it to the path the installer expects:
 
 ```bash
-# Install the 6.17 kernel source
+# Check your running kernel version
+KVER=$(uname -r | cut -d- -f1)
+echo "Running kernel: $KVER"
+
+# Find the available linux-source package
+apt-cache search linux-source | grep "^linux-source-"
+
+# Install the available source (e.g. linux-source-6.17.0)
 sudo apt install linux-source-6.17.0
 
-# Create symlink at the path the installer expects
-sudo ln -s /usr/src/linux-source-6.17.0/linux-source-6.17.0.tar.bz2 \
-  /usr/src/linux-source-6.19.10.tar.bz2
+# Set the source version you just installed
+SRC_VER=6.17.0
 
-# Also create the directory version if needed
-sudo mkdir -p /usr/src/linux-source-6.19.10
-sudo ln -s /usr/src/linux-source-6.17.0/linux-source-6.17.0.tar.bz2 \
-  /usr/src/linux-source-6.19.10/linux-source-6.19.10.tar.bz2
+# Create symlinks at the paths the installer expects
+sudo ln -s /usr/src/linux-source-${SRC_VER}/linux-source-${SRC_VER}.tar.bz2 \
+  /usr/src/linux-source-${KVER}.tar.bz2
+
+sudo mkdir -p /usr/src/linux-source-${KVER}
+sudo ln -s /usr/src/linux-source-${SRC_VER}/linux-source-${SRC_VER}.tar.bz2 \
+  /usr/src/linux-source-${KVER}/linux-source-${KVER}.tar.bz2
 ```
-
-> **Note:** Replace `6.19.10` with your actual kernel version from `uname -r | cut -d- -f1`. Replace `6.17.0` with the available linux-source version from `apt-cache search linux-source`.
 
 ### 4c — Clone and patch the installer
 
@@ -224,10 +230,13 @@ sudo git clone https://github.com/davidjo/snd_hda_macbookpro.git
 cd snd_hda_macbookpro
 ```
 
-The installer extracts HDA source files using the kernel version name internally. Since the tarball contains `linux-source-6.17.0/` but the installer looks for `linux-source-6.19.10/`, patch line 176:
+The installer extracts HDA source files using the kernel version name internally. Since the tarball contains the source version name (e.g. `linux-source-6.17.0/`) but the installer looks for the running kernel version, patch line 176:
 
 ```bash
-sudo sed -i 's/linux-source-$kernel_version\/sound\/hda/linux-source-6.17.0\/sound\/hda/g' \
+# Set to the source version you installed in Step 4b
+SRC_VER=6.17.0
+
+sudo sed -i "s/linux-source-\$kernel_version\/sound\/hda/linux-source-${SRC_VER}\/sound\/hda/g" \
   ~/snd_hda_macbookpro/install.cirrus.driver.sh
 
 # Verify the patch
@@ -244,9 +253,9 @@ sudo ./install.cirrus.driver.sh
 Wait a few minutes for it to compile. A successful install ends with:
 
 ```
-contents of /lib/modules/6.19.10-2-t2-noble/updates/codecs/cirrus
+contents of /lib/modules/<your-kernel>/updates/codecs/cirrus
 total 352
--rw-r--r-- 1 root root 358312 ... snd-hda-codec-cs8409.ko
+-rw-r--r-- 1 root root ... snd-hda-codec-cs8409.ko
 ```
 
 The SSL signing warning and missing `System.map` warning are harmless — ignore them.
@@ -606,8 +615,8 @@ boardtype=0x61b
 boardrev=0x1421
 vendid=0x14e4
 devid=0x43ba
-macaddr=00:90:4c:0d:f4:3e
-ccode=TR
+macaddr=YOUR_MAC_ADDRESS
+ccode=YOUR_COUNTRY_CODE
 regrev=245
 boardflags=0x10401001
 boardflags2=0x00000002
@@ -626,19 +635,19 @@ antswitch=0
 EOF
 ```
 
-> Replace `macaddr=00:90:4c:0d:f4:3e` with your actual MAC address from the `ip link` command above. Replace `ccode=TR` with your country code.
+> Replace `YOUR_MAC_ADDRESS` with your actual MAC address from `ip link show wlp3s0 | grep ether`. Replace `YOUR_COUNTRY_CODE` with your country code (e.g. `US`, `GB`, `TR`, `DE`).
 
 > **Credit:** The `boardflags3=0xC0000303` discovery is from Andy Holst via https://gist.github.com/almas/5f75adb61bccf604b6572f763ce63e3e
 
 ### 7d — Set regulatory domain
 
 ```bash
-# Set your country code (TR = Turkey, US, GB, DE, etc.)
-sudo iw reg set TR
+# Set your country code (US, GB, TR, DE, etc.)
+sudo iw reg set YOUR_COUNTRY_CODE
 
 # Make permanent
 sudo nano /etc/default/crda
-# Add or change: REGDOMAIN=TR
+# Add or change: REGDOMAIN=YOUR_COUNTRY_CODE
 ```
 
 ### 7e — Reload the driver and verify
@@ -725,7 +734,7 @@ cat /sys/class/leds/spi::kbd_backlight/brightness
 
 ---
 
-## Step 8d: Temperature & Fan Monitoring (Optional but Recommended)
+## Step 9: Temperature & Fan Monitoring (Optional but Recommended)
 
 Install `lm-sensors` to monitor fan speeds and temperatures from `applesmc`:
 
@@ -755,7 +764,7 @@ This confirms fan control is working via `applesmc`. If the `applesmc-acpi-0` se
 
 ---
 
-## Step 9: Restore T1 Firmware (Critical)
+## Step 10: Restore T1 Firmware (Critical)
 
 > ⚠️ **If you wipe macOS entirely, the T1 chip gets stuck in Recovery Mode.**
 
@@ -777,7 +786,7 @@ lsusb | grep Apple
 1. Boot into macOS Internet Recovery (`Cmd + Option + R` on boot)
 2. Reinstall macOS to a partition with minimum 20GB free space
 3. Boot into macOS once — T1 firmware is written to the EFI partition on first boot
-4. Back up WiFi firmware using the t2linux script (Step 7a above)
+4. Back up WiFi firmware using the t2linux script (Step 7a)
 5. Reinstall Ubuntu using **manual/custom partitioning**:
    - Select the EFI partition → set mount point to `/boot/efi` → set **"Leave formatted as VFAT"** (do NOT reformat)
    - Select remaining space for `/` formatted as ext4
@@ -840,6 +849,7 @@ lsusb | grep Apple
 | t2linux firmware script | https://wiki.t2linux.org/tools/firmware.sh |
 | facetimehd driver | https://github.com/patjak/facetimehd |
 | facetimehd firmware | https://github.com/patjak/facetimehd-firmware |
+| BCM43602 5GHz NVRAM fix (gist) | https://gist.github.com/almas/5f75adb61bccf604b6572f763ce63e3e |
 | macbook12-spi-driver (Touch Bar) | https://github.com/almas/macbook12-spi-driver |
 | Touch Bar USB rebind issue | https://github.com/roadrunner2/macbook12-spi-driver/issues/42 |
 | snd_hda_macbookpro (audio driver) | https://github.com/davidjo/snd_hda_macbookpro |
@@ -847,6 +857,8 @@ lsusb | grep Apple
 
 ---
 
-> **Tested on:** MacBookPro14,3 · Ubuntu 24.04 LTS · T2 Kernel 6.19.10-2-t2-noble · T1 chip
+> **Tested on:** MacBookPro14,3 · Ubuntu 24.04 LTS · T1 chip
+>
+> Kernel versions tested: T2 Kernel 6.19.10-2-t2-noble
 >
 > Contributions and corrections welcome — open an issue or PR.
