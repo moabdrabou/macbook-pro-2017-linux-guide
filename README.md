@@ -48,16 +48,16 @@ The 2017 MacBook Pro (Touch Bar) uses the **Apple T1 chip**, not T2. This is a f
 ## Table of Contents
 
 - [Prerequisites](#prerequisites)
-- [Step 1 — Install the T2 Kernel](#step-1-install-the-t2-kernel)
-- [Step 2 — Add Required Kernel Parameters](#step-2-add-required-kernel-parameters)
-- [Step 3 — apple-bce Module Note](#step-3-apple-bce-module-note)
-- [Step 4 — Fix Audio (Internal Speakers + Headphone Jack)](#step-4-fix-audio-internal-speakers-headphone-jack)
-- [Step 5 — Fix Touch Bar](#step-5-fix-touch-bar)
-- [Step 6 — Fix Webcam (FaceTime HD)](#step-6-fix-webcam-facetime-hd)
-- [Step 7 — Fix WiFi (2.4GHz + 5GHz)](#step-7-fix-wifi-24ghz-5ghz)
-- [Step 8 — Keyboard Backlight](#step-8-keyboard-backlight)
-- [Step 8d — Temperature & Fan Monitoring](#step-8d-temperature-fan-monitoring-optional-but-recommended)
-- [Step 9 — Restore T1 Firmware (Critical)](#step-9-restore-t1-firmware-critical)
+- [Step 1: Install the T2 Kernel](#step-1-install-the-t2-kernel)
+- [Step 2: Add Required Kernel Parameters](#step-2-add-required-kernel-parameters)
+- [Step 3: apple-bce Module Note](#step-3-apple-bce-module-note)
+- [Step 4: Fix Audio (Internal Speakers + Headphone Jack)](#step-4-fix-audio-internal-speakers--headphone-jack)
+- [Step 5: Fix Touch Bar](#step-5-fix-touch-bar)
+- [Step 6: Fix Webcam (FaceTime HD)](#step-6-fix-webcam-facetime-hd)
+- [Step 7: Fix WiFi (2.4GHz + 5GHz)](#step-7-fix-wifi-24ghz--5ghz)
+- [Step 8: Keyboard Backlight](#step-8-keyboard-backlight)
+- [Step 8d: Temperature & Fan Monitoring](#step-8d-temperature--fan-monitoring-optional-but-recommended)
+- [Step 9: Restore T1 Firmware (Critical)](#step-9-restore-t1-firmware-critical)
 - [Verification Checklist](#verification-checklist)
 - [Known Caveats](#known-caveats)
 - [Resources](#resources)
@@ -78,7 +78,7 @@ Make sure you have internet access via USB-C adapter/Ethernet or USB tethering d
 
 ---
 
-## Step 1 — Install the T2 Kernel
+## Step 1: Install the T2 Kernel
 
 The stock Ubuntu kernel lacks support for Apple T1 hardware. The T2 kernel (which also supports T1 Macs) enables keyboard, trackpad, fan control, and WiFi.
 
@@ -116,7 +116,7 @@ uname -r
 
 ---
 
-## Step 2 — Add Required Kernel Parameters
+## Step 2: Add Required Kernel Parameters
 
 These parameters are required for hardware passthrough and proper device initialization.
 
@@ -154,7 +154,7 @@ cat /proc/cmdline
 
 ---
 
-## Step 3 — apple-bce Module Note
+## Step 3: apple-bce Module Note
 
 > **T1 Mac owners: read this before following T2-focused guides.**
 
@@ -186,7 +186,7 @@ sudo dmesg | grep applespi
 
 ---
 
-## Step 4 — Fix Audio (Internal Speakers + Headphone Jack)
+## Step 4: Fix Audio (Internal Speakers + Headphone Jack)
 
 Internal speakers and headphone jack work on MBP14,2 / MBP14,3 using the community `snd_hda_macbookpro` driver by davidjo. The stock kernel CS8409 driver does not support the T1 sub-codec wiring — this out-of-tree driver adds that support.
 
@@ -333,7 +333,7 @@ sudo reboot
 
 ---
 
-## Step 5 — Fix Touch Bar
+## Step 5: Fix Touch Bar
 
 The T1 Touch Bar works using the `apple-ibridge` + `apple-ib-tb` driver stack from the `macbook12-spi-driver` repo, combined with a USB rebind trick to properly initialize the iBridge interface at boot.
 
@@ -491,7 +491,7 @@ Available `fnmode` values: `0` = media keys only, `1` = fn key switches modes, `
 
 ---
 
-## Step 6 — Fix Webcam (FaceTime HD)
+## Step 6: Fix Webcam (FaceTime HD)
 
 The 2017 MacBook Pro has an **Apple FaceTime HD PCIe camera**. It requires a reverse-engineered driver (`facetimehd`) and firmware extracted from Apple's drivers.
 
@@ -551,7 +551,7 @@ ffplay /dev/video0
 
 ---
 
-## Step 7 — Fix WiFi (2.4GHz + 5GHz)
+## Step 7: Fix WiFi (2.4GHz + 5GHz)
 
 The 2017 MacBook Pro uses a **Broadcom BCM43602** chip. The `brcmfmac` driver is built into the T2 kernel. With the right NVRAM firmware configuration file, both 2.4GHz and 5GHz bands work simultaneously.
 
@@ -676,7 +676,7 @@ sudo reboot
 
 ---
 
-## Step 8 — Keyboard Backlight
+## Step 8: Keyboard Backlight
 
 The keyboard backlight on MBP14,x is controlled via the `applespi` driver and exposed as `/sys/class/leds/spi::kbd_backlight`. It works out of the box but defaults to 0 (off) on every boot — a udev rule is needed to restore brightness automatically.
 
@@ -725,7 +725,7 @@ cat /sys/class/leds/spi::kbd_backlight/brightness
 
 ---
 
-## Step 8d — Temperature & Fan Monitoring (Optional but Recommended)
+## Step 8d: Temperature & Fan Monitoring (Optional but Recommended)
 
 Install `lm-sensors` to monitor fan speeds and temperatures from `applesmc`:
 
@@ -755,7 +755,7 @@ This confirms fan control is working via `applesmc`. If the `applesmc-acpi-0` se
 
 ---
 
-## Step 9 — Restore T1 Firmware (Critical)
+## Step 9: Restore T1 Firmware (Critical)
 
 > ⚠️ **If you wipe macOS entirely, the T1 chip gets stuck in Recovery Mode.**
 
