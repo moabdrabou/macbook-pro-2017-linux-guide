@@ -1,6 +1,47 @@
 # Ubuntu 24.04 LTS on MacBook Pro 2017 (Touch Bar) — Fix Guide
 
-> Covers: **Webcam**, **Touch Bar**, and **Audio** fixes for `MacBookPro14,2` (13") and `MacBookPro14,3` (15") running Ubuntu 24.04 LTS.
+> Covers: **Webcam**, **Touch Bar**, **Audio**, and **WiFi** for `MacBookPro14,2` (13") and `MacBookPro14,3` (15") running Ubuntu 24.04 LTS.
+
+---
+
+## ⚠️ Critical: T1 Chip vs T2 Chip — Know Your Model
+
+The 2017 MacBook Pro (Touch Bar) uses the **Apple T1 chip**, not T2. This is a fundamental distinction that affects which fixes apply to you. Much of the online documentation — including the t2linux project name itself — is primarily written for **T2 Macs (2018+)**. Some of it applies to T1, some does not.
+
+| Mac Model | Chip | Year |
+|-----------|------|------|
+| MacBookPro14,2 (13") | **T1** | 2017 |
+| MacBookPro14,3 (15") | **T1** | 2017 |
+| MacBookPro15,x+ | T2 | 2018+ |
+
+**Key T1 differences from T2:**
+- T1 has **no BCE PCIe device** — `apple_bce` module loads but finds nothing to bind to. This is expected and not an error.
+- T1 keyboard/trackpad communicate via **SPI** (`applespi` driver), not BCE
+- T1 Touch Bar uses a **USB HID** path, not `hid-appletb-kbd`
+- T1 internal speakers require a **sub-codec** (CS42L83/CS42L84) that the current Linux kernel driver does not fully support
+
+---
+
+## Current Feature Support Matrix (MBP14,2 / MBP14,3)
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Keyboard | ✅ Works | Via `applespi` (SPI driver) |
+| Trackpad | ✅ Works | Via `applespi` (SPI driver) |
+| WiFi (2.4GHz) | ✅ Works | BCM43602 with generic firmware |
+| WiFi (5GHz) | ❌ Not working | BCM43602 firmware limitation on Linux — no fix available |
+| Webcam | ✅ Works | Requires `facetimehd` driver |
+| Bluetooth | ✅ Works | Built into T2 kernel |
+| USB-C / Thunderbolt | ✅ Works | |
+| Internal Speakers | ✅ Works | Requires `snd_hda_macbookpro` out-of-tree driver |
+| Headphone Jack | ✅ Works | Requires `snd_hda_macbookpro` out-of-tree driver |
+| Internal Microphone | ⚠️ Partial | May work after driver install — test after reboot |
+| Bluetooth Audio | ✅ Works | |
+| Touch Bar | ❌ Not working | No T1 Touch Bar driver in mainline kernel |
+| Keyboard Backlight | ✅ Works | Via `applespi` — requires udev rule for persistence |
+| Fan Control | ✅ Works | Via `applesmc` |
+| Battery | ✅ Works | |
+| Suspend/Resume | ⚠️ Partial | May require tweaks |
 
 ---
 
@@ -9,11 +50,13 @@
 - [Prerequisites](#prerequisites)
 - [Step 1 — Install the T2 Kernel](#step-1--install-the-t2-kernel)
 - [Step 2 — Add Required Kernel Parameters](#step-2--add-required-kernel-parameters)
-- [Step 3 — Load apple-bce Module on Boot](#step-3--load-apple-bce-module-on-boot)
-- [Step 4 — Fix Audio](#step-4--fix-audio)
-- [Step 5 — Fix Touch Bar](#step-5--fix-touch-bar)
+- [Step 3 — apple-bce Module Note](#step-3--apple-bce-module-note)
+- [Step 4 — Audio (CS8409 Status)](#step-4--audio-cs8409-status)
+- [Step 5 — Touch Bar (T1 Status)](#step-5--touch-bar-t1-status)
 - [Step 6 — Fix Webcam (FaceTime HD)](#step-6--fix-webcam-facetime-hd)
-- [Step 7 — Fix WiFi (All Bands including 5GHz)](#step-7--fix-wifi-all-bands-including-5ghz)
+- [Step 7 — Fix WiFi](#step-7--fix-wifi)
+- [Step 8 — Keyboard Backlight](#step-8--keyboard-backlight)
+- [Step 9 — Restore T1 Firmware (Critical)](#step-9--restore-t1-firmware-critical)
 - [Verification Checklist](#verification-checklist)
 - [Known Caveats](#known-caveats)
 - [Resources](#resources)
@@ -22,7 +65,7 @@
 
 ## Prerequisites
 
-First, confirm your exact model identifier:
+Confirm your exact model identifier:
 
 ```bash
 sudo dmidecode -s system-product-name
@@ -30,13 +73,13 @@ sudo dmidecode -s system-product-name
 
 Expected output: `MacBookPro14,2` (13-inch) or `MacBookPro14,3` (15-inch).
 
-Make sure you have internet access (via USB-C adapter/Ethernet or external USB WiFi dongle if internal WiFi isn't working yet).
+Make sure you have internet access via USB-C adapter/Ethernet or USB tethering during setup, as internal WiFi firmware may need to be installed first.
 
 ---
 
 ## Step 1 — Install the T2 Kernel
 
-The stock Ubuntu kernel lacks support for Apple T1/T2 hardware. Installing the T2 kernel enables the **keyboard, trackpad, Touch Bar, audio, and fan** control.
+The stock Ubuntu kernel lacks support for Apple T1 hardware. The T2 kernel (which also supports T1 Macs) enables keyboard, trackpad, fan control, and WiFi.
 
 ```bash
 # Step 1 — Add GPG key and common repo
@@ -59,9 +102,14 @@ sudo apt update
 sudo apt install linux-t2
 ```
 
-> **Note:** If you get `E: Unable to locate package linux-t2` — it means Step 2 was skipped or failed. The release-specific repo (`noble`) must be appended to `t2.list` for Ubuntu 24.04. Two variants are available: `linux-t2` (Mainline, newer patches) and `linux-t2-lts` (LTS, more stable). Either works.
+> **Note:** If you get `E: Unable to locate package linux-t2` — it means the Noble-specific repo line (Step 2) was skipped or failed. Both steps are required for Ubuntu 24.04.
 
-Reboot and at the GRUB menu, select the **`linux-t2`** kernel entry.
+Reboot into the new kernel. Verify with:
+
+```bash
+uname -r
+# Should contain: -t2  e.g. 6.19.10-2-t2-noble
+```
 
 > **Repo:** https://github.com/t2linux/T2-Debian-and-Ubuntu-Kernel
 
@@ -69,7 +117,7 @@ Reboot and at the GRUB menu, select the **`linux-t2`** kernel entry.
 
 ## Step 2 — Add Required Kernel Parameters
 
-These parameters are required for audio and proper hardware passthrough.
+These parameters are required for hardware passthrough and proper device initialization.
 
 ```bash
 sudo nano /etc/default/grub
@@ -101,158 +149,201 @@ cat /proc/cmdline
 # Should contain: intel_iommu=on iommu=pt pcie_ports=compat
 ```
 
----
-
-## Step 3 — Load apple-bce Module on Boot
-
-The `apple-bce` module handles the Apple T1 Bridge Controller (keyboard, trackpad, Touch Bar communication).
-
-### Load on boot
-
-```bash
-echo apple-bce | sudo tee /etc/modules-load.d/t2.conf
-```
-
-### Load on early boot (recommended — needed for LUKS or keyboard at boot)
-
-```bash
-sudo su
-cat <<EOF >> /etc/initramfs-tools/modules
-# Required for Apple T1/T2 hardware (keyboard, trackpad, audio)
-snd
-snd_pcm
-apple-bce
-EOF
-update-initramfs -u
-exit
-```
+> ⚠️ **After a fresh Ubuntu reinstall, these parameters are lost.** Always re-add them after reinstalling the OS.
 
 ---
 
-## Step 4 — Fix Audio
+## Step 3 — apple-bce Module Note
 
-### 4a — Install audio config files
+> **T1 Mac owners: read this before following T2-focused guides.**
+
+The `apple_bce` module is included in the T2 kernel and will load automatically. On T1 Macs, **this is expected behaviour** — the module loads but finds no BCE device because the T1 chip architecture does not expose a BCE PCIe interface.
 
 ```bash
-sudo git clone https://github.com/kekrby/t2-better-audio.git /tmp/t2-better-audio
-cd /tmp/t2-better-audio
-./install.sh
-sudo rm -r /tmp/t2-better-audio
+# This will show apple_bce loaded but with 0 users — this is normal on T1
+lsmod | grep apple_bce
+
+# /dev/bce* will NOT exist on T1 — this is also normal
+ls /dev/bce*  # Expected: "No such file or directory"
+
+# The T1 iBridge appears as USB, not PCIe
+lsusb | grep Apple
+# Expected: Apple, Inc. iBridge
 ```
 
-Reboot, then verify the T2 audio card is detected:
+**Do not** add `apple-bce` to `/etc/modules-load.d/` or `/etc/initramfs-tools/modules` on T1 Macs — it serves no purpose.
+
+The keyboard and trackpad on T1 Macs work through the **SPI interface** via the `applespi` driver, which loads automatically:
 
 ```bash
-sed -n "s/.*\(AppleT2.*\) -.*/\1/p" /proc/asound/cards
-# Expected output: AppleT2xN  (where N is a number)
-# If output is just "AppleT2" — the driver needs updating (see note below)
-# If no output — the T2 kernel from Step 1 is not loaded
-```
-
-Also verify with:
-
-```bash
-aplay -l
-# Should list an Apple T2 card entry
-```
-
-### 4b — Switch to PipeWire (recommended)
-
-Ubuntu 24.04 uses PipeWire by default. If for some reason you're on PulseAudio, switch to PipeWire for the best experience (headphone auto-switching, lower latency):
-
-```bash
-sudo apt install pipewire pipewire-pulse wireplumber
-systemctl --user enable --now pipewire pipewire-pulse wireplumber
+sudo dmesg | grep applespi
+# Expected:
+# applespi spi-APP000D:00: modeswitch done.
+# input: Apple SPI Keyboard
+# input: Apple SPI Touchpad
 ```
 
 ---
 
-### ⚠️ Kernel 6.17+ HWE Note
+## Step 4 — Fix Audio (Internal Speakers + Headphone Jack)
 
-If you upgrade to the Ubuntu HWE kernel (6.17+) and audio stops working (sound shows as playing but no output), this is a known regression. The Cirrus Logic CS8409 driver was reorganized in kernel 6.17.
+Internal speakers and headphone jack work on MBP14,2 / MBP14,3 using the community `snd_hda_macbookpro` driver by davidjo. The stock kernel CS8409 driver does not support the T1 sub-codec wiring — this out-of-tree driver adds that support.
 
-**Fix:** Stay on the T2 kernel, or manually install the updated driver from Launchpad:
+### 4a — Prerequisites
 
 ```bash
-# Download the kernel source package for Ubuntu 24.04
-wget https://launchpad.net/~canonical-kernel-security-team/+archive/ubuntu/ppa/+build/32347426/+files/linux-source-6.17.0_6.17.0-19.19_all.deb
-
-sudo dpkg -i linux-source-6.17.0_6.17.0-19.19_all.deb
+sudo apt install git build-essential
 ```
 
-> Follow the full tutorial at: https://9to5linux.com/how-to-fix-no-sound-issue-on-macbook-pro-with-linux-kernel-6-17-and-later
+### 4b — Install kernel source (required by the installer)
 
----
-
-## Step 5 — Fix Touch Bar
-
-### 5a — Install tiny-dfr (Touch Bar display manager)
+The installer needs the kernel 6.17 source as a build reference. Install it, then create a symlink so the installer can find it under the running kernel version:
 
 ```bash
-# The T2 apt repo was added in Step 1
-sudo apt install tiny-dfr
+# Install the 6.17 kernel source
+sudo apt install linux-source-6.17.0
+
+# Create symlink at the path the installer expects
+sudo ln -s /usr/src/linux-source-6.17.0/linux-source-6.17.0.tar.bz2 \
+  /usr/src/linux-source-6.19.10.tar.bz2
+
+# Also create the directory version if needed
+sudo mkdir -p /usr/src/linux-source-6.19.10
+sudo ln -s /usr/src/linux-source-6.17.0/linux-source-6.17.0.tar.bz2 \
+  /usr/src/linux-source-6.19.10/linux-source-6.19.10.tar.bz2
+```
+
+> **Note:** Replace `6.19.10` with your actual kernel version from `uname -r | cut -d- -f1`. Replace `6.17.0` with the available linux-source version from `apt-cache search linux-source`.
+
+### 4c — Clone and patch the installer
+
+```bash
+cd ~
+sudo git clone https://github.com/davidjo/snd_hda_macbookpro.git
+cd snd_hda_macbookpro
+```
+
+The installer extracts HDA source files using the kernel version name internally. Since the tarball contains `linux-source-6.17.0/` but the installer looks for `linux-source-6.19.10/`, patch line 176:
+
+```bash
+sudo sed -i 's/linux-source-$kernel_version\/sound\/hda/linux-source-6.17.0\/sound\/hda/g' \
+  ~/snd_hda_macbookpro/install.cirrus.driver.sh
+
+# Verify the patch
+grep "sound/hda" ~/snd_hda_macbookpro/install.cirrus.driver.sh
+```
+
+### 4d — Run the installer
+
+```bash
+cd ~/snd_hda_macbookpro
+sudo ./install.cirrus.driver.sh
+```
+
+Wait a few minutes for it to compile. A successful install ends with:
+
+```
+contents of /lib/modules/6.19.10-2-t2-noble/updates/codecs/cirrus
+total 352
+-rw-r--r-- 1 root root 358312 ... snd-hda-codec-cs8409.ko
+```
+
+The SSL signing warning and missing `System.map` warning are harmless — ignore them.
+
+### 4e — Reboot and test
+
+```bash
 sudo reboot
 ```
 
-The Touch Bar should light up after reboot.
-
-### 5b — Set Touch Bar mode
-
-Available modes:
-
-| Mode | Behavior |
-|------|----------|
-| `0`  | Function keys (F1–F12) |
-| `1`  | Media/brightness controls (default Bootcamp-style) |
-| `2`  | Off |
+After reboot:
 
 ```bash
-cat <<EOF | sudo tee /etc/modprobe.d/tb.conf
-options hid-appletb-kbd mode=1
+# Verify the new module loaded
+lsmod | grep snd_hda_codec_cs8409
+
+# Test speakers
+speaker-test -c 2 -t wav
+
+# Check PipeWire sees the audio card
+pactl list sinks short
+```
+
+### 4f — Set up PipeWire (if not already running)
+
+```bash
+sudo apt install pipewire pipewire-pulse wireplumber pulseaudio-utils
+systemctl --user enable --now pipewire pipewire-pulse wireplumber
+```
+
+Set the correct output profile and port:
+
+```bash
+pactl set-card-profile alsa_card.pci-0000_00_1f.3 output:analog-stereo+input:analog-stereo
+pactl set-sink-port alsa_output.pci-0000_00_1f.3.analog-stereo analog-output-speaker
+```
+
+Make the profile persist across reboots:
+
+```bash
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d/
+
+cat <<EOF > ~/.config/wireplumber/wireplumber.conf.d/51-apple-audio.conf
+monitor.alsa.rules = [
+  {
+    matches = [{ device.name = "alsa_card.pci-0000_00_1f.3" }]
+    actions = {
+      update-props = {
+        api.acp.auto-profile = true
+        api.acp.auto-port = true
+      }
+    }
+  }
+]
 EOF
 
-# Apply without rebooting
-sudo modprobe -r hid-appletb-kbd
-sudo modprobe hid-appletb-kbd
+systemctl --user restart wireplumber
 ```
 
-### 5c — Suspend/resume fix for Touch Bar
+### ⚠️ After kernel updates
 
-If the Touch Bar goes blank after waking from suspend, create this hook:
+The `snd_hda_macbookpro` driver is **not** a DKMS module — it will not rebuild automatically after kernel updates. After every kernel update, re-run the installer:
 
 ```bash
-sudo nano /usr/lib/systemd/system-sleep/touchbar.sh
+cd ~/snd_hda_macbookpro
+sudo ./install.cirrus.driver.sh
+sudo reboot
 ```
 
-Paste:
+> **Driver source:** https://github.com/davidjo/snd_hda_macbookpro
+
+---
+
+## Step 5 — Touch Bar (T1 Status)
+
+> ⚠️ **The Touch Bar does not work on MBP14,2 / MBP14,3 with the current kernel.**
+
+The T1 Touch Bar uses a USB HID path that differs from the T2 Touch Bar. The `tiny-dfr` tool and `hid-appletb-kbd` module are designed for **T2 Macs only**. Do not install `tiny-dfr` on a T1 Mac — it will have no effect.
+
+The Touch Bar strip remains **lit** (showing the default brightness controls from firmware) but is not interactive under Linux.
 
 ```bash
-#!/bin/bash
-case $1/$2 in
-  pre/*)
-    modprobe -r hid_appletb_kbd
-    modprobe -r hid_appletb_bl
-    ;;
-  post/*)
-    sleep 4
-    modprobe hid_appletb_bl
-    sleep 2
-    modprobe hid_appletb_kbd
-    ;;
-esac
+# The T1 Touch Bar is hosted by the iBridge USB device
+lsusb | grep Apple
+# Shows: Apple, Inc. iBridge
+
+# No interactive Touch Bar driver is available for T1
+sudo dmesg | grep -i "touchbar\|8302"
+# No relevant output expected
 ```
 
-Make it executable:
-
-```bash
-sudo chmod +x /usr/lib/systemd/system-sleep/touchbar.sh
-```
+**Tracking support:** T1 Touch Bar Linux support would require a dedicated USB HID driver. There is no active upstream effort for this at time of writing.
 
 ---
 
 ## Step 6 — Fix Webcam (FaceTime HD)
 
-The 2017 MacBook Pro has an **Apple FaceTime HD PCIe camera**. It requires a reverse-engineered driver (`facetimehd`) and firmware extracted from Apple's Windows driver.
+The 2017 MacBook Pro has an **Apple FaceTime HD PCIe camera**. It requires a reverse-engineered driver (`facetimehd`) and firmware extracted from Apple's drivers.
 
 ### 6a — Install dependencies
 
@@ -269,7 +360,7 @@ sudo make
 sudo make install
 ```
 
-Expected output includes:
+Expected output:
 
 ```
 Extracted firmware version x.x.x
@@ -296,171 +387,205 @@ echo facetimehd | sudo tee /etc/modules-load.d/facetimehd.conf
 Reboot, then verify:
 
 ```bash
-lsusb | grep -i apple
-# Look for: Apple, Inc. FaceTime HD Camera (Built-in)
-
 ls /dev/video*
 # Should show /dev/video0
 
-# Quick test with ffplay (install with: sudo apt install ffmpeg)
+lsmod | grep facetimehd
+# Should list the module
+
+# Quick test (install ffmpeg if needed: sudo apt install ffmpeg)
 ffplay /dev/video0
 ```
 
+> **Note:** DKMS rebuilds the driver automatically on kernel updates. If the webcam breaks after a kernel update, run `sudo dkms autoinstall`.
+
 ---
 
-## Step 7 — Fix WiFi (All Bands including 5GHz)
+## Step 7 — Fix WiFi
 
-The 2017 MacBook Pro uses a **Broadcom BCM43602** chip. Without proper firmware, Linux defaults to a generic driver that only sees 2.4GHz networks and has weak signal. The fix requires copying the WiFi firmware from macOS to Linux.
+The 2017 MacBook Pro uses a **Broadcom BCM43602** chip. The `brcmfmac` driver is built into the T2 kernel, but proper Apple-specific firmware must be copied from macOS for reliable operation.
 
-> ⚠️ **Important:** Do NOT install `broadcom-wl` — it breaks things. The correct driver is `brcmfmac` which is already built into the T2 kernel. The issue is missing firmware files, not the driver itself.
+> ⚠️ **Do NOT install `broadcom-wl`** — it conflicts with `brcmfmac` and breaks WiFi entirely.
 
-### 7a — Copy firmware from macOS (do this while still in macOS)
+> ⚠️ **5GHz WiFi does not work on BCM43602 under Linux.** The Apple-specific firmware binary is incompatible with the `brcmfmac` driver — using it causes the driver to crash. The generic firmware provides reliable 2.4GHz connectivity only.
 
-Before reinstalling Ubuntu, run these commands in macOS Terminal to copy the firmware to your USB drive:
+### 7a — Back up WiFi firmware from macOS
 
-```bash
-# Find your USB mount point
-diskutil list
-
-# Copy WiFi firmware files to USB (replace YOUR_USB with your volume name)
-sudo mkdir -p /Volumes/YOUR_USB/wifi-firmware
-sudo cp /usr/share/firmware/wifi/* /Volumes/YOUR_USB/wifi-firmware/ 2>/dev/null
-sudo cp /private/var/db/PersistentSystemInstallation/firmware/WiFi/* /Volumes/YOUR_USB/wifi-firmware/ 2>/dev/null
-
-# Also try the standalone path
-sudo cp /usr/standalone/firmware/wifi/* /Volumes/YOUR_USB/wifi-firmware/ 2>/dev/null
-```
-
-Alternatively, use the official t2linux firmware script — download it on macOS:
+Run this in macOS Terminal **before** wiping macOS:
 
 ```bash
+# Use the official t2linux firmware script — saves firmware to EFI partition
 curl -OL https://wiki.t2linux.org/tools/firmware.sh
 chmod +x firmware.sh
 sudo ./firmware.sh
+# Choose Option 1 (copy to EFI partition) and answer Y to keep a copy
 ```
 
-This script automatically finds and packages the correct firmware files for your Mac model.
+This saves `firmware-raw.tar.gz` and `firmware.sh` to your EFI partition, surviving Ubuntu reinstalls.
 
 ### 7b — Install firmware on Ubuntu
 
-After booting into Ubuntu, copy the firmware files to the correct location:
-
 ```bash
-# Create the firmware directory
-sudo mkdir -p /lib/firmware/brcm
-
-# Copy from USB (replace YOUR_USB_MOUNT with your actual mount point)
-sudo cp /media/$USER/YOUR_USB/wifi-firmware/* /lib/firmware/brcm/
-
-# Or if you used the t2linux script, it produces a tar.gz — extract it:
-# sudo tar -xzf wifi-firmware.tar.gz -C /lib/firmware/brcm/
+# Run the script from the EFI partition (works after any Ubuntu reinstall)
+sudo bash /boot/efi/firmware.sh
+# Choose Option 1 — retrieves from EFI partition
+# Answer Y to keep a copy for future use
 ```
 
-### 7c — Fix 5GHz by setting country code
-
-The BCM43602 chip defaults to country code `X0` which Linux doesn't support, blocking 5GHz channels. Fix it:
+### 7c — Set regulatory domain
 
 ```bash
-# Check current country code
-iw reg get
-
-# Set regulatory domain — use your actual country code (TR for Turkey, US, GB, DE, etc.)
+# Set your country code (TR = Turkey, US, GB, DE, etc.)
 sudo iw reg set TR
-```
 
-Make it permanent:
-
-```bash
+# Make permanent
 sudo nano /etc/default/crda
 # Add or change: REGDOMAIN=TR
 ```
 
-Also create a firmware config file to set it at the driver level:
+### 7d — Find your WiFi interface name
 
 ```bash
-# Find your MAC address
-ip link show | grep -A1 wlan
-# Note the MAC address e.g. aa:bb:cc:dd:ee:ff
-
-sudo nano /lib/firmware/brcm/brcmfmac43602-pcie.txt
+ip link show | grep wl
+# Interface is likely wlp3s0, not wlan0
 ```
 
-Add these contents (replace the MAC address with yours):
-
-```
-# Firmware configuration for BCM43602 - MacBook Pro 2017
-boardtype=0x073e
-boardrev=0x1101
-boardflags=0x00080001
-boardflags2=0x00000000
-sromrev=11
-ccode=TR
-regrev=0
-macaddr=aa:bb:cc:dd:ee:ff
-```
-
-### 7d — Reload the driver
+### 7e — Verify WiFi is working
 
 ```bash
-sudo modprobe -r brcmfmac_wcc
-sudo modprobe -r brcmfmac
-sudo modprobe brcmfmac
-```
-
-### 7e — Verify 5GHz networks are visible
-
-```bash
-# Scan for networks and check bands
-sudo iw dev wlan0 scan | grep -E "SSID|freq"
-# 5GHz networks use frequencies 5000MHz+
-# 2.4GHz networks use frequencies around 2400MHz
-
-# Check signal and connection info
-iwconfig wlan0
-
-# Confirm country code applied
-iw reg get
+sudo iw dev wlp3s0 scan | grep SSID
+sudo dmesg | grep brcmfmac | tail -5
 ```
 
 ### ⚠️ wpa_supplicant regression note
 
-If WiFi connects but immediately drops or won't authenticate despite correct password, this is a known regression in `wpa_supplicant 2.11`. Fix it by disabling offloading:
+If WiFi connects but immediately drops, add this kernel parameter:
 
 ```bash
-# Add to kernel parameters in /etc/default/grub
-# GRUB_CMDLINE_LINUX="... brcmfmac.feature_disable=0x82000"
 sudo nano /etc/default/grub
+# Add to GRUB_CMDLINE_LINUX: brcmfmac.feature_disable=0x82000
 
-# Apply
 sudo update-grub
 sudo reboot
 ```
 
 ---
 
+## Step 8 — Keyboard Backlight
+
+The keyboard backlight on MBP14,x is controlled via the `applespi` driver and exposed as `/sys/class/leds/spi::kbd_backlight`. It works out of the box but defaults to 0 (off) on every boot — a udev rule is needed to restore brightness automatically.
+
+### 8a — Test brightness manually
+
+```bash
+# Check current brightness (0 = off)
+cat /sys/class/leds/spi::kbd_backlight/brightness
+
+# Check maximum value
+cat /sys/class/leds/spi::kbd_backlight/max_brightness
+# Returns: 255
+
+# Set brightness (0–255)
+echo 100 | sudo tee /sys/class/leds/spi::kbd_backlight/brightness
+```
+
+### 8b — Make it persist across reboots
+
+```bash
+# Create a udev rule to set brightness when the device appears at boot
+cat <<EOF | sudo tee /etc/udev/rules.d/90-kbd-backlight.rules
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="spi::kbd_backlight", ATTR{brightness}="100"
+EOF
+
+# Reload udev rules
+sudo udevadm control --reload-rules
+```
+
+Adjust `100` to your preferred brightness level (0–255).
+
+### 8c — Verify after reboot
+
+```bash
+sudo reboot
+```
+
+After reboot:
+
+```bash
+cat /sys/class/leds/spi::kbd_backlight/brightness
+# Should return 100 (or whatever value you set)
+```
+
+> **Note:** The Fn+F5/F6 brightness keys do not currently adjust the backlight on T1 Macs under Linux — only the udev rule and manual `tee` commands work. This is a limitation of the current `applespi` driver.
+
+---
+
+## Step 9 — Restore T1 Firmware (Critical)
+
+> ⚠️ **If you wipe macOS entirely, the T1 chip gets stuck in Recovery Mode.**
+
+When macOS is wiped, the T1 firmware stored in the EFI partition is deleted. Without it:
+- `lsusb` shows `Apple, Inc. Apple Mobile Device [Recovery Mode]` instead of `Apple, Inc. iBridge`
+- WiFi firmware installation fails
+- The system is in a degraded state
+
+**How to check:**
+
+```bash
+lsusb | grep Apple
+# Good: Apple, Inc. iBridge
+# Bad:  Apple, Inc. Apple Mobile Device [Recovery Mode]
+```
+
+**How to fix — full procedure:**
+
+1. Boot into macOS Internet Recovery (`Cmd + Option + R` on boot)
+2. Reinstall macOS to a partition with minimum 20GB free space
+3. Boot into macOS once — T1 firmware is written to the EFI partition on first boot
+4. Back up WiFi firmware using the t2linux script (Step 7a above)
+5. Reinstall Ubuntu using **manual/custom partitioning**:
+   - Select the EFI partition → set mount point to `/boot/efi` → set **"Leave formatted as VFAT"** (do NOT reformat)
+   - Select remaining space for `/` formatted as ext4
+6. Boot into Ubuntu — T1 firmware in EFI survives the reinstall
+
+> The Ubuntu installer reuses the existing EFI partition without reformatting it as long as you use manual partitioning. This preserves the Apple T1 firmware files that macOS wrote there.
+
+---
+
 ## Verification Checklist
 
-| Component   | Command                                                         | Expected Result                        |
-|-------------|------------------------------------------------------------------|----------------------------------------|
-| Kernel      | `uname -r`                                                       | Contains `-t2`                         |
-| Kernel params | `cat /proc/cmdline`                                            | Contains `intel_iommu=on iommu=pt`     |
-| Audio card  | `sed -n "s/.*\(AppleT2.*\) -.*/\1/p" /proc/asound/cards`       | `AppleT2xN`                            |
-| Audio list  | `aplay -l`                                                       | Lists Apple T2 card                    |
-| Touch Bar   | Visual check                                                     | Lights up after `tiny-dfr` + reboot    |
-| Webcam      | `ls /dev/video*`                                                 | `/dev/video0` present                  |
-| Webcam driver | `lsmod | grep facetimehd`                                      | Module listed                          |
-| WiFi bands    | `sudo iw dev wlan0 scan \| grep freq`                           | Shows 5000MHz+ frequencies             |
-| WiFi country  | `iw reg get`                                                     | Shows your country code                |
+| Component | Command | Expected Result |
+|-----------|---------|-----------------|
+| Kernel | `uname -r` | Contains `-t2` |
+| Kernel params | `cat /proc/cmdline` | Contains `intel_iommu=on iommu=pt` |
+| T1 chip mode | `lsusb \| grep Apple` | `Apple, Inc. iBridge` (not Recovery Mode) |
+| Keyboard/Trackpad | `sudo dmesg \| grep applespi` | `modeswitch done` + input devices listed |
+| WiFi interface | `ip link show \| grep wl` | `wlp3s0` present |
+| WiFi connection | `iwconfig wlp3s0` | Shows ESSID and signal |
+| Webcam | `ls /dev/video*` | `/dev/video0` present |
+| Webcam driver | `lsmod \| grep facetimehd` | Module listed |
+| Audio driver | `lsmod \| grep snd_hda_codec_cs8409` | Module listed |
+| Audio output | `speaker-test -c 2 -t wav` | Sound from speakers |
+| Keyboard backlight | `cat /sys/class/leds/spi::kbd_backlight/brightness` | Returns your set value (e.g. 100) |
+| Bluetooth | Settings → Bluetooth | Devices discoverable |
 
 ---
 
 ## Known Caveats
 
-- **Microphone**: The `t2-better-audio` script fixes speakers and headphone jack. Internal microphone support may vary — check the [t2linux audio guide](https://wiki.t2linux.org/guides/audio-config/) for DSP mic config.
-- **WiFi signal strength**: Even after the fix, signal may be weaker than macOS. This is a known limitation of the Linux brcmfmac driver on BCM43602. Positioning closer to the router helps.
-- **broadcom-wl**: Do NOT install this package — it conflicts with `brcmfmac` and breaks WiFi entirely.
-- **DKMS & kernel updates**: The `facetimehd` driver is installed as a DKMS module, so it should rebuild automatically on kernel updates. If the webcam breaks after a kernel update, run `sudo dkms autoinstall`.
-- **Secure Boot**: Must be disabled in Apple's Startup Security Utility for the T2 kernel to load.
+**Internal speakers / headphone jack:** Work after installing the `snd_hda_macbookpro` out-of-tree driver (Step 4). The driver must be manually reinstalled after every kernel update — it is not a DKMS module and does not rebuild automatically.
+
+**Touch Bar:** No T1 Touch Bar driver exists in the mainline kernel. The bar remains lit (firmware default) but is not interactive. `tiny-dfr` and `hid-appletb-kbd` are for T2 Macs only — do not install them on T1.
+
+**5GHz WiFi:** The BCM43602 Apple-specific firmware binary causes the `brcmfmac` driver to crash. 2.4GHz works reliably with the generic firmware.
+
+**apple_bce:** Loads on T1 without error but finds no device — this is normal and expected. `/dev/bce*` will not exist on T1.
+
+**EFI partition:** Never format the EFI partition during Ubuntu installation. It contains the T1 chip firmware written by macOS. If wiped, the T1 enters Recovery Mode.
+
+**broadcom-wl:** Do NOT install. Conflicts with `brcmfmac` and breaks WiFi.
+
+**DKMS:** The `facetimehd` driver rebuilds automatically on kernel updates. If webcam breaks after a kernel upgrade, run `sudo dkms autoinstall`.
 
 ---
 
@@ -470,18 +595,15 @@ sudo reboot
 |----------|-----|
 | t2linux Wiki | https://wiki.t2linux.org |
 | t2linux Ubuntu/Debian Kernel | https://github.com/t2linux/T2-Debian-and-Ubuntu-Kernel |
-| t2linux Audio Guide | https://wiki.t2linux.org/guides/audio-config/ |
-| t2-better-audio | https://github.com/kekrby/t2-better-audio |
-| tiny-dfr (Touch Bar) | https://github.com/AsahiLinux/tiny-dfr |
-| facetimehd driver | https://github.com/patjak/facetimehd |
-| facetimehd firmware | https://github.com/patjak/facetimehd-firmware |
-| Kernel 6.17 audio fix | https://9to5linux.com/how-to-fix-no-sound-issue-on-macbook-pro-with-linux-kernel-6-17-and-later |
 | t2linux WiFi & Bluetooth Guide | https://wiki.t2linux.org/guides/wifi-bluetooth/ |
 | t2linux firmware script | https://wiki.t2linux.org/tools/firmware.sh |
+| facetimehd driver | https://github.com/patjak/facetimehd |
+| facetimehd firmware | https://github.com/patjak/facetimehd-firmware |
+| snd_hda_macbookpro (audio driver) | https://github.com/davidjo/snd_hda_macbookpro |
 | t2linux Discord | https://discord.com/invite/68MRhQu |
 
 ---
 
-> **Tested on:** MacBookPro14,2 / MacBookPro14,3 · Ubuntu 24.04 LTS · T2 Kernel
+> **Tested on:** MacBookPro14,3 · Ubuntu 24.04 LTS · T2 Kernel 6.19.10-2-t2-noble · T1 chip
 >
 > Contributions and corrections welcome — open an issue or PR.
