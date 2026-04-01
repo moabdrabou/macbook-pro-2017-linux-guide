@@ -56,6 +56,7 @@ The 2017 MacBook Pro (Touch Bar) uses the **Apple T1 chip**, not T2. This is a f
 - [Step 6 — Fix Webcam (FaceTime HD)](#step-6--fix-webcam-facetime-hd)
 - [Step 7 — Fix WiFi](#step-7--fix-wifi)
 - [Step 8 — Keyboard Backlight](#step-8--keyboard-backlight)
+- [Step 8d — Temperature & Fan Monitoring](#step-8d--temperature--fan-monitoring-optional-but-recommended)
 - [Step 9 — Restore T1 Firmware (Critical)](#step-9--restore-t1-firmware-critical)
 - [Verification Checklist](#verification-checklist)
 - [Known Caveats](#known-caveats)
@@ -721,6 +722,36 @@ cat /sys/class/leds/spi::kbd_backlight/brightness
 ```
 
 > **Note:** The Fn+F5/F6 brightness keys do not currently adjust the backlight on T1 Macs under Linux — only the udev rule and manual `tee` commands work. This is a limitation of the current `applespi` driver.
+
+---
+
+## Step 8d — Temperature & Fan Monitoring (Optional but Recommended)
+
+Install `lm-sensors` to monitor fan speeds and temperatures from `applesmc`:
+
+```bash
+sudo apt install lm-sensors
+```
+
+Run with:
+
+```bash
+sensors
+```
+
+Expected output includes an `applesmc-acpi-0` section showing both fans and all temperature sensors:
+
+```
+applesmc-acpi-0
+Adapter: ACPI interface
+Left side  : 2603 RPM  (min = 2160 RPM, max = 5927 RPM)
+Right side : 2412 RPM  (min = 2000 RPM, max = 5489 RPM)
+TC0P:         +58.2°C
+TG0P:         +56.8°C
+...
+```
+
+This confirms fan control is working via `applesmc`. If the `applesmc-acpi-0` section is missing, the module isn't loaded — check with `lsmod | grep applesmc`.
 
 ---
 
