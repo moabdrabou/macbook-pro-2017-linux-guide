@@ -330,7 +330,26 @@ arecord -d 5 -f cd /tmp/test-mic.wav && aplay /tmp/test-mic.wav
 
 ### ⚠️ After kernel updates
 
-The `snd_hda_macbookpro` driver is **not** a DKMS module — it will not rebuild automatically after kernel updates. After every kernel update, re-run the installer:
+The `snd_hda_macbookpro` driver is **not** a DKMS module — it will not rebuild automatically after kernel updates. After every kernel update, you need to reinstall the driver.
+
+**Quick method — install the helper script (recommended):**
+
+This repo includes `reinstall-audio-driver.sh`, which automates the entire reinstall process (installs kernel source, creates symlinks, patches the installer, runs it, and verifies the result).
+
+```bash
+# Install it system-wide (one-time setup)
+sudo cp /path/to/reinstall-audio-driver.sh /usr/local/bin/reinstall-audio-driver
+sudo chmod +x /usr/local/bin/reinstall-audio-driver
+```
+
+Then after any kernel update, just run:
+
+```bash
+sudo reinstall-audio-driver
+sudo reboot
+```
+
+**Manual method:**
 
 ```bash
 cd ~/snd_hda_macbookpro
